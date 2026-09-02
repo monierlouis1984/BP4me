@@ -22,9 +22,6 @@
   },
   "homepage": "https://github.com/monierlouis1984/BP4ME#readme",
   "private": "true",
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.123.0"
-  },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260902.1",
     "typescript": "^7.0.2",

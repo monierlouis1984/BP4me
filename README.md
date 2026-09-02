@@ -10,7 +10,7 @@ you can email to your physician.
 ## Features
 
 - **Photo reading** — the camera photo is sent to a Cloudflare Worker, which asks
-  Claude (vision) for the systolic, diastolic and pulse values. The values are
+  Gemini (vision) for the systolic, diastolic and pulse values. The values are
   pre-filled in the form with a confidence indicator; you always confirm before
   saving. Manual entry works without the vision service.
 - **Log** — date/time (defaults to now), arm, free-text note, automatic ACC/AHA
@@ -29,13 +29,15 @@ you can email to your physician.
 
 - Static front-end in `public/` (vanilla JS, Chart.js, jsPDF + AutoTable from cdnjs)
 - Cloudflare Worker in `src/worker.ts` serving the assets and `POST /api/read`
-- `@anthropic-ai/sdk` with structured JSON output (`output_config.format`)
+- Gemini API (`generateContent` over plain `fetch`, no SDK) with a JSON
+  `responseSchema`; model `gemini-flash-latest` by default, overridable with the
+  `BP4ME_MODEL` var in `wrangler.jsonc`
 
 ## Run locally
 
 ```bash
 npm install
-cp .dev.vars.example .dev.vars   # put your ANTHROPIC_API_KEY in it
+cp .dev.vars.example .dev.vars   # put your GEMINI_API_KEY in it
 npm run dev                      # http://localhost:8787
 ```
 
@@ -45,13 +47,13 @@ service is not configured and you enter values by hand.
 ## Deploy
 
 ```bash
-npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put GEMINI_API_KEY
 npm run deploy
 ```
 
-`wrangler.jsonc` disables the `workers.dev` URL, so attach a custom domain or
-route (for example `bp4me.louismonier.com`) in the Cloudflare dashboard or via
-`routes` in `wrangler.jsonc`.
+`wrangler.jsonc` deliberately declares no hostname: bp4me.louismonier.com is
+owned by the `louismonier-gate` Worker (see `~/Documents/Website`), which checks
+the portal login and forwards here through a service binding.
 
 ## API
 
@@ -64,8 +66,8 @@ returns
   "reading": { "found": true, "sys": 128, "dia": 82, "pul": 66,
                "confidence": "high", "irregular_heartbeat": false, "notes": "..." },
   "warning": null,
-  "model": "claude-opus-5",
-  "usage": { "input_tokens": 1400, "output_tokens": 60 }
+  "model": "gemini-3.8-flash",
+  "usage": { "input_tokens": 1100, "output_tokens": 60 }
 }
 ```
 

@@ -1,14 +1,16 @@
 // BP4me Worker — serves the static app and exposes POST /api/read,
-// which asks Claude (vision) to read SYS / DIA / PUL off a photo of a
-// digital blood pressure monitor.
-
-import Anthropic from "@anthropic-ai/sdk";
+// which asks Gemini (vision) to read SYS / DIA / PUL off a photo of a
+// digital blood pressure monitor. Talks to the Gemini API over plain
+// fetch (generateContent with a JSON response schema); no SDK needed.
 
 export interface Env {
   ASSETS: Fetcher;
-  ANTHROPIC_API_KEY?: string;
+  GEMINI_API_KEY?: string;
   BP4ME_MODEL?: string;
 }
+
+const DEFAULT_MODEL = "gemini-flash-latest";
+const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
 
 type MediaType = "image/jpeg" | "image/png" | "image/webp" | "image/gif";
 const ALLOWED_MEDIA: MediaType[] = ["image/jpeg", "image/png", "image/webp", "image/gif"];
@@ -19,7 +21,7 @@ interface ReadRequest {
   media_type?: string;
 }
 
-// Shape Claude must return. Zero means "not readable" for the numeric fields.
+// Shape Gemini must return. Zero means "not readable" for the numeric fields.
 interface MonitorReading {
   found: boolean;
   sys: number;
@@ -30,6 +32,7 @@ interface MonitorReading {
   notes: string;
 }
 
+// OpenAPI-subset schema for generationConfig.responseSchema.
 const READING_SCHEMA = {
   type: "object",
   properties: {
@@ -53,8 +56,8 @@ const READING_SCHEMA = {
     },
   },
   required: ["found", "sys", "dia", "pul", "confidence", "irregular_heartbeat", "notes"],
-  additionalProperties: false,
-} as const;
+  propertyOrdering: ["found", "sys", "dia", "pul", "confidence", "irregular_heartbeat", "notes"],
+};
 
 const SYSTEM_PROMPT = `You read the LCD/LED display of home digital blood pressure monitors from a photo.
 
@@ -85,10 +88,22 @@ function sanityCheck(r: MonitorReading): string | null {
   return null;
 }
 
+// Minimal typing of the parts of the generateContent response we read.
+interface GeminiResponse {
+  candidates?: Array<{
+    content?: { parts?: Array<{ text?: string }> };
+    finishReason?: string;
+  }>;
+  promptFeedback?: { blockReason?: string };
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
+  modelVersion?: string;
+  error?: { code?: number; message?: string; status?: string };
+}
+
 async function handleRead(request: Request, env: Env): Promise<Response> {
-  if (!env.ANTHROPIC_API_KEY) {
+  if (!env.GEMINI_API_KEY) {
     return json(
-      { ok: false, error: "not_configured", message: "The server has no ANTHROPIC_API_KEY configured. Enter the values manually." },
+      { ok: false, error: "not_configured", message: "The server has no GEMINI_API_KEY configured. Enter the values manually." },
       503,
     );
   }
@@ -112,69 +127,90 @@ async function handleRead(request: Request, env: Env): Promise<Response> {
     return json({ ok: false, error: "too_large", message: "Image is larger than 8 MB." }, 413);
   }
 
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-  const model = env.BP4ME_MODEL || "claude-opus-5";
+  const model = env.BP4ME_MODEL || DEFAULT_MODEL;
 
+  let upstream: Response;
   try {
-    const response = await client.messages.create({
-      model,
-      max_tokens: 2048,
-      system: SYSTEM_PROMPT,
-      thinking: { type: "adaptive" },
-      output_config: {
-        effort: "medium",
-        format: { type: "json_schema", schema: READING_SCHEMA },
-      },
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: image } },
-            { type: "text", text: "Read the blood pressure monitor in this photo and return SYS, DIA and PUL." },
-          ],
+    upstream = await fetch(`${GEMINI_ENDPOINT}/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { inlineData: { mimeType: mediaType, data: image } },
+              { text: "Read the blood pressure monitor in this photo and return SYS, DIA and PUL." },
+            ],
+          },
+        ],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: READING_SCHEMA,
+          temperature: 0,
+          maxOutputTokens: 2048,
         },
-      ],
-    });
-
-    if (response.stop_reason === "refusal") {
-      return json({ ok: false, error: "refused", message: "The model declined to process this image. Enter the values manually." }, 422);
-    }
-
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("");
-    let reading: MonitorReading;
-    try {
-      reading = JSON.parse(text) as MonitorReading;
-    } catch {
-      return json({ ok: false, error: "bad_model_output", message: "Could not parse the model response." }, 502);
-    }
-
-    const problem = sanityCheck(reading);
-    return json({
-      ok: true,
-      reading,
-      warning: problem,
-      model: response.model,
-      usage: { input_tokens: response.usage.input_tokens, output_tokens: response.usage.output_tokens },
+      }),
     });
   } catch (err) {
-    if (err instanceof Anthropic.AuthenticationError) {
-      return json({ ok: false, error: "auth", message: "The server's Anthropic API key was rejected." }, 502);
-    }
-    if (err instanceof Anthropic.RateLimitError) {
+    console.error("gemini fetch failed", err);
+    return json({ ok: false, error: "network", message: "Could not reach the vision service." }, 502);
+  }
+
+  const data = (await upstream.json().catch(() => ({}))) as GeminiResponse;
+
+  if (!upstream.ok) {
+    const message = data.error?.message || `HTTP ${upstream.status}`;
+    if (upstream.status === 429) {
       return json({ ok: false, error: "rate_limited", message: "Too many requests right now. Try again in a moment." }, 429);
     }
-    if (err instanceof Anthropic.APIConnectionError) {
-      return json({ ok: false, error: "network", message: "Could not reach the vision service." }, 502);
+    if (upstream.status === 401 || upstream.status === 403 || /API key/i.test(message)) {
+      return json({ ok: false, error: "auth", message: "The server's Gemini API key was rejected." }, 502);
     }
-    if (err instanceof Anthropic.APIError) {
-      return json({ ok: false, error: "upstream", message: `Vision service error (${err.status ?? "?"}): ${err.message}` }, 502);
+    if (upstream.status === 404) {
+      return json({ ok: false, error: "model", message: `Vision model "${model}" was not found.` }, 502);
     }
-    console.error("read failed", err);
-    return json({ ok: false, error: "internal", message: "Unexpected error while reading the image." }, 500);
+    console.error("gemini error", upstream.status, message);
+    return json({ ok: false, error: "upstream", message: `Vision service error (${upstream.status}): ${message}` }, 502);
   }
+
+  if (data.promptFeedback?.blockReason) {
+    return json({ ok: false, error: "refused", message: "The model declined to process this image. Enter the values manually." }, 422);
+  }
+  const candidate = data.candidates?.[0];
+  const text = (candidate?.content?.parts ?? []).map((p) => p.text ?? "").join("");
+  if (!text) {
+    const why = candidate?.finishReason ? ` (${candidate.finishReason})` : "";
+    return json({ ok: false, error: "bad_model_output", message: `The model returned no reading${why}.` }, 502);
+  }
+
+  let reading: MonitorReading;
+  try {
+    reading = JSON.parse(text) as MonitorReading;
+  } catch {
+    return json({ ok: false, error: "bad_model_output", message: "Could not parse the model response." }, 502);
+  }
+  reading = {
+    found: Boolean(reading.found),
+    sys: Number(reading.sys) || 0,
+    dia: Number(reading.dia) || 0,
+    pul: Number(reading.pul) || 0,
+    confidence: (["high", "medium", "low"] as const).includes(reading.confidence) ? reading.confidence : "low",
+    irregular_heartbeat: Boolean(reading.irregular_heartbeat),
+    notes: String(reading.notes ?? ""),
+  };
+
+  return json({
+    ok: true,
+    reading,
+    warning: sanityCheck(reading),
+    model: data.modelVersion || model,
+    usage: {
+      input_tokens: data.usageMetadata?.promptTokenCount ?? null,
+      output_tokens: data.usageMetadata?.candidatesTokenCount ?? null,
+    },
+  });
 }
 
 export default {
@@ -186,7 +222,7 @@ export default {
       return handleRead(request, env);
     }
     if (url.pathname === "/api/health") {
-      return json({ ok: true, vision: Boolean(env.ANTHROPIC_API_KEY), model: env.BP4ME_MODEL || "claude-opus-5" });
+      return json({ ok: true, vision: Boolean(env.GEMINI_API_KEY), model: env.BP4ME_MODEL || DEFAULT_MODEL });
     }
     if (url.pathname.startsWith("/api/")) {
       return json({ ok: false, error: "not_found" }, 404);

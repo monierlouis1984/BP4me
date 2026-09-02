@@ -24,9 +24,11 @@
     "enabled": true
   },
   "vars": {
-    // Vision model used to read the monitor display.
-    "BP4ME_MODEL": "claude-opus-5"
+    // Vision model used to read the monitor display. "gemini-flash-latest" is
+    // Google's alias for the newest Flash release (hot-swapped on each release);
+    // pin an explicit ID such as "gemini-3.8-flash" if a new release misbehaves.
+    "BP4ME_MODEL": "gemini-flash-latest"
   }
-  // Secret (set with `npx wrangler secret put ANTHROPIC_API_KEY`, or in .dev.vars locally):
-  //   ANTHROPIC_API_KEY
+  // Secret (set with `npx wrangler secret put GEMINI_API_KEY`, or in .dev.vars locally):
+  //   GEMINI_API_KEY
 }
