@@ -65,6 +65,8 @@ p { margin: .25rem 0 .75rem; }
 }
 .brand { display: flex; align-items: center; gap: .5rem; font-weight: 700; font-size: 1.15rem; padding-bottom: .5rem; }
 .brand img { border-radius: 7px; }
+.sync-pill { font-size: .72rem; font-weight: 600; line-height: 1; padding: .3rem .5rem; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); white-space: nowrap; }
+.sync-pill[data-state="auth"], .sync-pill[data-state="error"] { color: var(--status-critical); border-color: currentColor; }
 .tabs { display: flex; gap: .25rem; overflow-x: auto; margin-left: auto; }
 .tab {
   appearance: none; background: none; border: 0; border-bottom: 3px solid transparent;

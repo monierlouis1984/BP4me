@@ -1,6 +1,8 @@
 {
   // BP4me — blood pressure logger with visual AI reading of the monitor screen.
-  // Static front-end served from ./public; POST /api/read is handled by the Worker.
+  // Static front-end served from ./public; /api/* is handled by the Worker.
+  // Readings are stored in the D1 database "bp4me" (binding DB), keyed by the
+  // portal user; the browser keeps a localStorage copy as an offline cache.
   //
   // NO routes here, on purpose. bp4me.louismonier.com belongs to the Worker
   // "louismonier-gate" (~/Documents/Website), which checks the portal session
@@ -23,12 +25,27 @@
   "observability": {
     "enabled": true
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bp4me",
+      "database_id": "f09146b3-aa31-42a3-8a51-b5a42648af5b",
+      "migrations_dir": "migrations"
+    }
+  ],
   "vars": {
     // Vision model used to read the monitor display. "gemini-flash-latest" is
     // Google's alias for the newest Flash release (hot-swapped on each release);
     // pin an explicit ID such as "gemini-3.8-flash" if a new release misbehaves.
     "BP4ME_MODEL": "gemini-flash-latest"
   }
-  // Secret (set with `npx wrangler secret put GEMINI_API_KEY`, or in .dev.vars locally):
-  //   GEMINI_API_KEY
+  // Secrets (set with `npx wrangler secret put <NAME>`, or in .dev.vars locally):
+  //   GEMINI_API_KEY   required for photo reading
+  //   SESSION_SECRET   optional: same value as the portal's; when set, the
+  //                    session cookie signature is re-verified here too
+  // Local dev only (.dev.vars): BP4ME_DEV_USER=owner — acts as that user when
+  // there is no portal cookie (wrangler dev runs without the gate).
+  //
+  // Database: `npx wrangler d1 migrations apply bp4me --remote` after adding
+  // a file to ./migrations (0001 has already been applied to the live DB).
 }
