@@ -1,6 +1,14 @@
 {
   // BP4me — blood pressure logger with visual AI reading of the monitor screen.
   // Static front-end served from ./public; POST /api/read is handled by the Worker.
+  //
+  // NO routes here, on purpose. bp4me.louismonier.com belongs to the Worker
+  // "louismonier-gate" (~/Documents/Website), which checks the portal session
+  // and forwards to this Worker through a service binding. Declaring the
+  // hostname here would take it back on every deploy and silently drop the
+  // login requirement. Same rule as ~/pickleball, ~/Dumpling web app, etc.
+  // Deploy with `npx wrangler deploy`; verify with `npm run check` in
+  // ~/Documents/Website.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "bp4me",
   "main": "src/worker.ts",
