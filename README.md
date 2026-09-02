@@ -20,15 +20,25 @@ you can email to your physician.
   evening breakdown, systolic/diastolic and pulse charts with threshold lines.
 - **Report** — pick a date range, download a PDF (summary, chart, full table),
   print, or open a pre-filled email to your physician and attach the PDF.
-- **Privacy** — readings are stored only in the browser (localStorage). Export and
-  import JSON, or export CSV, from Settings. Photos are sent to the vision API
-  for reading and are not stored anywhere.
+- **Cloud storage with offline cache** — readings are stored per user in a
+  Cloudflare D1 database and cached in the browser (localStorage), so the app
+  works offline and the same history shows on every device. Changes made
+  offline are queued and uploaded when the connection returns; conflicts
+  resolve per reading by last write, and deletions propagate everywhere.
+  Export and import JSON, or export CSV, from Settings. Photos are sent to the
+  vision API for reading and are not stored anywhere. The profile (name,
+  physician) stays in the browser.
 - **Installable** — a web-app manifest lets you add BP4me to the phone home screen.
 
 ## Stack
 
 - Static front-end in `public/` (vanilla JS, Chart.js, jsPDF + AutoTable from cdnjs)
-- Cloudflare Worker in `src/worker.ts` serving the assets and `POST /api/read`
+- Cloudflare Worker in `src/worker.ts` serving the assets, `POST /api/read`
+  (vision), and the readings sync API (`GET /api/readings`,
+  `POST /api/readings/sync`) in `src/readings.ts`
+- Cloudflare D1 database `bp4me` (binding `DB`, schema in `migrations/`); the
+  user id comes from the portal session cookie forwarded by the gate
+  (`src/session.ts`)
 - Gemini API (`generateContent` over plain `fetch`, no SDK) with a JSON
   `responseSchema`; model `gemini-flash-latest` by default, overridable with the
   `BP4ME_MODEL` var in `wrangler.jsonc`
@@ -37,19 +47,26 @@ you can email to your physician.
 
 ```bash
 npm install
-cp .dev.vars.example .dev.vars   # put your GEMINI_API_KEY in it
+cp .dev.vars.example .dev.vars   # put your GEMINI_API_KEY in it; BP4ME_DEV_USER=owner is preset
+npx wrangler d1 migrations apply bp4me --local   # create the local D1 schema (once)
 npm run dev                      # http://localhost:8787
 ```
 
 Without an API key the app still runs; the photo button reports that the vision
-service is not configured and you enter values by hand.
+service is not configured and you enter values by hand. `wrangler dev` has no
+portal cookie, so the readings API acts as the `BP4ME_DEV_USER` from `.dev.vars`.
 
 ## Deploy
 
 ```bash
 npx wrangler secret put GEMINI_API_KEY
+npx wrangler d1 migrations apply bp4me --remote   # only when ./migrations has a new file
 npm run deploy
 ```
+
+Optionally `npx wrangler secret put SESSION_SECRET` with the portal's value: the
+Worker then re-verifies the session cookie's signature instead of relying on the
+gate alone.
 
 `wrangler.jsonc` deliberately declares no hostname: bp4me.louismonier.com is
 owned by the `louismonier-gate` Worker (see `~/Documents/Website`), which checks
@@ -71,7 +88,15 @@ returns
 }
 ```
 
-`GET /api/health` reports whether the vision key is configured.
+`GET /api/readings?since=<ms>` returns the signed-in user's readings and
+deletions written after `since` (D1 clock) with the next `cursor`; the client
+keeps the cursor and only pulls what changed. `POST /api/readings/sync` with
+`{ "upserts": [reading...], "deletes": [{ "id", "updatedAt" }...] }` applies
+queued changes; per reading, the newer `updatedAt` wins and a tie goes to the
+deletion. Both require the portal session (401 otherwise).
+
+`GET /api/health` reports whether the vision key and the database are configured
+and whether the request carries a valid session.
 
 ## Disclaimer
 

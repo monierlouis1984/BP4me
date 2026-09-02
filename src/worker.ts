@@ -1,10 +1,18 @@
-// BP4me Worker — serves the static app and exposes POST /api/read,
-// which asks Gemini (vision) to read SYS / DIA / PUL off a photo of a
-// digital blood pressure monitor. Talks to the Gemini API over plain
-// fetch (generateContent with a JSON response schema); no SDK needed.
+// BP4me Worker — serves the static app and exposes:
+//   POST /api/read           ask Gemini (vision) to read SYS / DIA / PUL off a
+//                            photo of a digital blood pressure monitor
+//   GET  /api/readings       pull the signed-in user's readings from D1
+//   POST /api/readings/sync  push queued changes (upserts + deletions) to D1
+//   GET  /api/health
+// Gemini is called over plain fetch (generateContent with a JSON response
+// schema); no SDK needed. Readings live in D1, keyed by the portal user.
 
-export interface Env {
+import { getUserId, type SessionEnv } from "./session";
+import { BadRequest, MAX_BATCH, applyChanges, parseDeletion, parseReading, pullChanges } from "./readings";
+
+export interface Env extends SessionEnv {
   ASSETS: Fetcher;
+  DB?: D1Database;
   GEMINI_API_KEY?: string;
   BP4ME_MODEL?: string;
 }
@@ -213,6 +221,52 @@ async function handleRead(request: Request, env: Env): Promise<Response> {
   });
 }
 
+// ---------- readings sync (D1) ----------
+
+async function handleReadings(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!env.DB) {
+    return json({ ok: false, error: "not_configured", message: "Cloud sync is not configured on the server." }, 503);
+  }
+  const userId = await getUserId(request, env);
+  if (!userId) {
+    return json({ ok: false, error: "unauthorized", message: "Sign in to sync your readings." }, 401);
+  }
+
+  if (url.pathname === "/api/readings") {
+    if (request.method !== "GET") return json({ ok: false, error: "method_not_allowed" }, 405, { allow: "GET" });
+    const since = Math.max(0, Math.floor(Number(url.searchParams.get("since")) || 0));
+    const result = await pullChanges(env.DB, userId, since);
+    return json({ ok: true, ...result, now: Date.now() });
+  }
+
+  if (url.pathname === "/api/readings/sync") {
+    if (request.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405, { allow: "POST" });
+    let body: { upserts?: unknown; deletes?: unknown };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return json({ ok: false, error: "bad_request", message: "Body must be JSON." }, 400);
+    }
+    const rawUpserts = Array.isArray(body.upserts) ? body.upserts : [];
+    const rawDeletes = Array.isArray(body.deletes) ? body.deletes : [];
+    if (rawUpserts.length > MAX_BATCH || rawDeletes.length > MAX_BATCH) {
+      return json({ ok: false, error: "too_large", message: `Send at most ${MAX_BATCH} changes per request.` }, 413);
+    }
+    try {
+      const upserts = rawUpserts.map(parseReading);
+      const deletes = rawDeletes.map(parseDeletion);
+      await applyChanges(env.DB, userId, upserts, deletes);
+      return json({ ok: true, upserted: upserts.length, deleted: deletes.length, now: Date.now() });
+    } catch (err) {
+      if (err instanceof BadRequest) return json({ ok: false, error: "bad_request", message: err.message }, 400);
+      console.error("readings sync failed", err);
+      return json({ ok: false, error: "storage", message: "Could not save to the database. Your changes are kept on this device and will be retried." }, 500);
+    }
+  }
+
+  return json({ ok: false, error: "not_found" }, 404);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -221,8 +275,17 @@ export default {
       if (request.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405, { allow: "POST" });
       return handleRead(request, env);
     }
+    if (url.pathname === "/api/readings" || url.pathname === "/api/readings/sync") {
+      return handleReadings(request, env, url);
+    }
     if (url.pathname === "/api/health") {
-      return json({ ok: true, vision: Boolean(env.GEMINI_API_KEY), model: env.BP4ME_MODEL || DEFAULT_MODEL });
+      return json({
+        ok: true,
+        vision: Boolean(env.GEMINI_API_KEY),
+        model: env.BP4ME_MODEL || DEFAULT_MODEL,
+        sync: Boolean(env.DB),
+        user: Boolean(await getUserId(request, env)),
+      });
     }
     if (url.pathname.startsWith("/api/")) {
       return json({ ok: false, error: "not_found" }, 404);

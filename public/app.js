@@ -1,11 +1,15 @@
-/* BP4me — front-end. Readings are kept in localStorage; the only network
-   call is POST /api/read, which sends a downscaled photo to the Worker. */
+/* BP4me — front-end. Readings live in the cloud (D1, via /api/readings) and
+   are cached in localStorage so the app works offline; changes made offline
+   are queued and pushed when the connection is back. POST /api/read sends a
+   downscaled photo to the Worker for the vision reading. */
 (() => {
   "use strict";
 
   // ---------- storage ----------
-  const READINGS_KEY = "bp4me.readings.v1";
-  const SETTINGS_KEY = "bp4me.settings.v1";
+  const READINGS_KEY = "bp4me.readings.v1"; // cached copy of the user's readings
+  const SETTINGS_KEY = "bp4me.settings.v1"; // profile, local only
+  const PENDING_KEY = "bp4me.pending.v1"; // { [id]: { op: "upsert" | "delete", updatedAt } } not yet pushed
+  const SYNC_KEY = "bp4me.sync.v1"; // { cursor, lastSyncAt }
 
   const loadJSON = (key, fallback) => {
     try {
@@ -23,18 +27,40 @@
     }
   };
 
-  let readings = loadJSON(READINGS_KEY, []).filter(isValidReading).sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+  let readings = loadJSON(READINGS_KEY, []).filter(isValidReading).map(withUpdatedAt).sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
   let settings = loadJSON(SETTINGS_KEY, {});
+  let pending = loadJSON(PENDING_KEY, {});
+  let syncMeta = loadJSON(SYNC_KEY, null);
 
   function isValidReading(r) {
     return r && typeof r.ts === "string" && Number.isFinite(r.sys) && Number.isFinite(r.dia) && !Number.isNaN(Date.parse(r.ts));
   }
+  // Readings saved before cloud sync existed have no updatedAt; date them by
+  // their measurement time so a later edit from another device wins.
+  function withUpdatedAt(r) {
+    return Number.isFinite(r.updatedAt) && r.updatedAt > 0 ? r : { ...r, updatedAt: Date.parse(r.ts) || Date.now() };
+  }
   function persist() {
     readings.sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
     saveJSON(READINGS_KEY, readings);
+    saveJSON(PENDING_KEY, pending);
     renderAll();
   }
   const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+  // Local mutations: write the cache, queue the change, kick a sync.
+  function upsertLocal(reading) {
+    reading.updatedAt = Date.now();
+    const idx = readings.findIndex((r) => r.id === reading.id);
+    if (idx >= 0) readings[idx] = { ...readings[idx], ...reading };
+    else readings.push(reading);
+    pending[reading.id] = { op: "upsert", updatedAt: reading.updatedAt };
+    return idx >= 0;
+  }
+  function deleteLocal(id) {
+    readings = readings.filter((x) => x.id !== id);
+    pending[id] = { op: "delete", updatedAt: Date.now() };
+  }
 
   // ---------- categories (2017 ACC/AHA) ----------
   const CATEGORIES = {
@@ -167,15 +193,10 @@
       source: sourceIn.value,
       irregular: lastIrregular || null,
     };
-    const idx = readings.findIndex((r) => r.id === reading.id);
-    if (idx >= 0) {
-      readings[idx] = { ...readings[idx], ...reading };
-      toast("Reading updated.");
-    } else {
-      readings.push(reading);
-      toast(`Saved ${sys}/${dia}${pul ? ` · ${pul} bpm` : ""}.`);
-    }
+    const updated = upsertLocal(reading);
+    toast(updated ? "Reading updated." : `Saved ${sys}/${dia}${pul ? ` · ${pul} bpm` : ""}.`);
     persist();
+    scheduleSync();
     resetForm();
   });
   $("#clearBtn").addEventListener("click", resetForm);
@@ -202,8 +223,9 @@
     const r = readings.find((x) => x.id === id);
     if (!r) return;
     if (!confirm(`Delete the reading ${r.sys}/${r.dia} from ${fmtDateTime(r.ts)}?`)) return;
-    readings = readings.filter((x) => x.id !== id);
+    deleteLocal(id);
     persist();
+    scheduleSync();
     toast("Reading deleted.");
   }
 
@@ -711,7 +733,7 @@
       incoming.forEach((r) => {
         const key = `${r.ts}|${r.sys}|${r.dia}`;
         if (existing.has(r.id) || keys.has(key)) return;
-        readings.push({ ...r, id: r.id || newId() });
+        upsertLocal({ ...r, id: r.id || newId() });
         keys.add(key);
         added++;
       });
@@ -721,16 +743,20 @@
         loadSettingsForm();
       }
       persist();
+      scheduleSync();
       $("#dataStatus").textContent = `Imported ${added} new reading${added === 1 ? "" : "s"} (${incoming.length - added} duplicates skipped).`;
     } catch (err) {
       $("#dataStatus").textContent = `Import failed: ${err.message}`;
     }
   });
-  $("#wipeBtn").addEventListener("click", () => {
+  $("#wipeBtn").addEventListener("click", async () => {
+    // Pull first so readings added on other devices are included.
+    if (navigator.onLine) await runSync();
     if (!readings.length) return toast("Nothing to delete.");
-    if (!confirm(`Delete all ${readings.length} readings from this browser? Export first if you want a backup.`)) return;
-    readings = [];
+    if (!confirm(`Delete all ${readings.length} readings from your account, on every device? Export first if you want a backup.`)) return;
+    readings.map((r) => r.id).forEach(deleteLocal);
     persist();
+    scheduleSync();
     $("#dataStatus").textContent = "All readings deleted.";
   });
 
@@ -738,8 +764,173 @@
     .then((r) => r.json())
     .then((h) => {
       $("#visionStatus").textContent = h.vision ? `ready (${h.model})` : "not configured — manual entry only";
+      if (!h.sync) setSyncState("disabled");
     })
     .catch(() => ($("#visionStatus").textContent = "unavailable"));
+
+  // ---------- cloud sync ----------
+  // Push queued changes, then pull everything written since the last cursor.
+  // Conflicts resolve per reading by updatedAt (last writer wins); the server
+  // keeps tombstones so a deletion reaches every device.
+  const SYNC_BATCH = 500;
+  const CURSOR_OVERLAP_MS = 2000; // re-read a little to absorb clock differences between D1 writes
+  let syncing = false, syncQueued = false, syncTimer, syncState = { state: "idle" };
+
+  class SyncError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  async function api(path, init) {
+    const res = await fetch(path, { credentials: "same-origin", redirect: "manual", ...init, headers: { accept: "application/json", ...(init && init.headers) } });
+    const isJson = (res.headers.get("content-type") || "").includes("json");
+    if (res.status >= 500 && !isJson) throw new SyncError("error", `Server error ${res.status}.`);
+    // A signed-out session is redirected to the portal login page (GET) or refused with 401 (POST).
+    if (res.type === "opaqueredirect" || res.status === 401 || res.status === 403 || !isJson) throw new SyncError("auth", "You are signed out. Reload the page to sign in again.");
+    const data = await res.json();
+    if (data.error === "not_configured") throw new SyncError("disabled", data.message);
+    if (!res.ok || !data.ok) throw new SyncError("error", data.message || `Server error ${res.status}.`);
+    return data;
+  }
+
+  async function pushPending() {
+    for (;;) {
+      const entries = Object.entries(pending);
+      if (!entries.length) return;
+      const upserts = [], deletes = [], sent = [];
+      for (const [id, p] of entries) {
+        if (upserts.length + deletes.length >= SYNC_BATCH) break;
+        if (p.op === "delete") deletes.push({ id, updatedAt: p.updatedAt });
+        else {
+          const r = readings.find((x) => x.id === id);
+          if (!r) {
+            delete pending[id];
+            continue;
+          }
+          upserts.push(r);
+        }
+        sent.push([id, p.updatedAt]);
+      }
+      if (!sent.length) return;
+      await api("/api/readings/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ upserts, deletes }) });
+      // Drop what we sent, unless it changed again while the request was in flight.
+      sent.forEach(([id, updatedAt]) => {
+        if (pending[id] && pending[id].updatedAt === updatedAt) delete pending[id];
+      });
+      saveJSON(PENDING_KEY, pending);
+    }
+  }
+
+  async function pullChanges() {
+    let cursor = syncMeta && Number.isFinite(syncMeta.cursor) ? syncMeta.cursor : 0;
+    let changed = false;
+    for (;;) {
+      const since = Math.max(0, cursor - CURSOR_OVERLAP_MS);
+      const data = await api(`/api/readings?since=${since}`);
+      for (const s of data.readings) {
+        const p = pending[s.id];
+        if (p && p.updatedAt > s.updatedAt) continue; // our unsent change is newer
+        if (p) delete pending[s.id]; // server already has something newer; the queued change would lose anyway
+        const idx = readings.findIndex((r) => r.id === s.id);
+        if (idx >= 0) {
+          if (readings[idx].updatedAt === s.updatedAt) continue;
+          readings[idx] = s;
+        } else readings.push(s);
+        changed = true;
+      }
+      for (const d of data.deleted) {
+        const p = pending[d.id];
+        if (p && p.op === "upsert" && p.updatedAt > d.updatedAt) continue;
+        if (p) delete pending[d.id];
+        const before = readings.length;
+        readings = readings.filter((r) => r.id !== d.id);
+        if (readings.length !== before) changed = true;
+      }
+      cursor = Math.max(cursor, data.cursor);
+      if (!data.more) break;
+    }
+    syncMeta = { cursor, lastSyncAt: Date.now() };
+    saveJSON(SYNC_KEY, syncMeta);
+    if (changed) persist();
+    else saveJSON(PENDING_KEY, pending);
+  }
+
+  async function runSync() {
+    if (syncState.state === "disabled") return;
+    if (syncing) {
+      syncQueued = true;
+      return;
+    }
+    if (!navigator.onLine) return setSyncState("offline");
+    syncing = true;
+    setSyncState("syncing");
+    try {
+      if (!syncMeta) {
+        // First sync from this browser: everything already here goes up too.
+        readings.forEach((r) => {
+          if (!pending[r.id]) pending[r.id] = { op: "upsert", updatedAt: r.updatedAt };
+        });
+        saveJSON(PENDING_KEY, pending);
+      }
+      await pushPending();
+      await pullChanges();
+      setSyncState("synced");
+    } catch (err) {
+      console.error("sync failed", err);
+      setSyncState(err instanceof SyncError ? err.code : navigator.onLine ? "error" : "offline", err.message);
+    } finally {
+      syncing = false;
+      if (syncQueued) {
+        syncQueued = false;
+        runSync();
+      }
+    }
+  }
+  function scheduleSync(delay = 800) {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(runSync, delay);
+    renderSyncStatus();
+  }
+
+  const pendingCount = () => Object.keys(pending).length;
+  const ago = (t) => {
+    const m = Math.round((Date.now() - t) / 60000);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : fmtDateTime(t);
+  };
+  function setSyncState(state, message) {
+    syncState = { state, message };
+    renderSyncStatus();
+  }
+  function renderSyncStatus() {
+    const n = pendingCount();
+    const waiting = n ? `${n} change${n === 1 ? "" : "s"} waiting to upload` : "";
+    let text, pill = "";
+    switch (syncState.state) {
+      case "disabled": text = "Cloud sync is not configured on the server. Readings stay in this browser."; break;
+      case "syncing": text = "Syncing…"; break;
+      case "offline": text = `Offline. ${waiting || "Everything is already uploaded"}; it will sync when you're back online.`; pill = n ? `Offline · ${n} unsent` : "Offline"; break;
+      case "auth": text = syncState.message; pill = "Signed out"; break;
+      case "error": text = `Sync failed: ${syncState.message} ${waiting ? `${waiting}; ` : ""}will retry.`; pill = n ? `${n} unsent` : "Not synced"; break;
+      case "synced": text = n ? `${waiting}…` : `Up to date${syncMeta && syncMeta.lastSyncAt ? ` · synced ${ago(syncMeta.lastSyncAt)}` : ""}.`; break;
+      default: text = syncMeta && syncMeta.lastSyncAt ? `Last synced ${ago(syncMeta.lastSyncAt)}.${waiting ? ` ${waiting}.` : ""}` : "Not synced yet.";
+    }
+    $("#syncStatus").textContent = text;
+    const pillEl = $("#syncPill");
+    pillEl.textContent = pill;
+    pillEl.hidden = !pill;
+    pillEl.dataset.state = syncState.state;
+  }
+  $("#syncNowBtn").addEventListener("click", () => scheduleSync(0));
+  window.addEventListener("online", () => scheduleSync(0));
+  window.addEventListener("offline", () => setSyncState("offline"));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") scheduleSync(0);
+  });
+  setInterval(() => {
+    if (document.visibilityState === "visible") runSync();
+  }, 5 * 60000);
 
   // ---------- init ----------
   function renderAll() {
@@ -761,4 +952,6 @@
     startTab = localStorage.getItem("bp4me.tab") || "log";
   } catch {}
   if (startTab !== "log") showTab(startTab);
+  renderSyncStatus();
+  scheduleSync(0);
 })();

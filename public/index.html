@@ -16,6 +16,7 @@
     <div class="brand">
       <img src="/icons/icon.svg" alt="" width="28" height="28">
       <span>BP4me</span>
+      <span class="sync-pill" id="syncPill" hidden></span>
     </div>
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button class="tab is-active" role="tab" data-tab="log" aria-selected="true">Log</button>
@@ -176,7 +177,7 @@
     <section class="panel" id="panel-report" data-panel="report">
       <div class="card">
         <h2>Report for your physician</h2>
-        <p class="muted">Choose a period, generate a PDF, then attach it to an email. Nothing leaves your device until you send it.</p>
+        <p class="muted">Choose a period, generate a PDF, then attach it to an email. The PDF is built on your device and only goes where you send it.</p>
         <div class="form-grid">
           <label><span>From</span><input type="date" id="reportFrom"></label>
           <label><span>To</span><input type="date" id="reportTo"></label>
@@ -214,7 +215,12 @@
 
       <div class="card">
         <h2>Data</h2>
-        <p class="muted">All readings live in this browser's storage. Export regularly to keep a backup.</p>
+        <p class="muted">Readings are saved to your account in the cloud and cached in this browser, so the app also works offline. Changes made offline upload automatically when you're back online.</p>
+        <p class="muted small" id="syncStatus" role="status" aria-live="polite">Checking…</p>
+        <div class="form-actions">
+          <button class="btn" id="syncNowBtn">Sync now</button>
+        </div>
+        <h3>Export &amp; import</h3>
         <div class="form-actions">
           <button class="btn" id="exportJsonBtn">Export JSON</button>
           <button class="btn" id="exportCsvBtn">Export CSV</button>

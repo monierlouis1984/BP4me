@@ -1,3 +1,7 @@
 # Copy to .dev.vars for local development (never commit .dev.vars).
 # Get a key at https://aistudio.google.com/apikey
 GEMINI_API_KEY=AIza...
+# Local user id for the readings API (there is no portal cookie in `wrangler dev`).
+BP4ME_DEV_USER=owner
+# Optional: the portal's SESSION_SECRET, to re-verify the session cookie signature.
+# SESSION_SECRET=
