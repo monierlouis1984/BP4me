@@ -1,0 +1,12 @@
+{
+  "name": "BP4me",
+  "short_name": "BP4me",
+  "description": "Blood pressure logger that reads your monitor's screen.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fcfcfb",
+  "theme_color": "#2a78d6",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

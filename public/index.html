@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>BP4me</title>
+  <meta name="description" content="Blood pressure logger that reads your monitor's screen with visual AI.">
+  <meta name="theme-color" content="#2a78d6">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/icon.svg" alt="" width="28" height="28">
+      <span>BP4me</span>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab is-active" role="tab" data-tab="log" aria-selected="true">Log</button>
+      <button class="tab" role="tab" data-tab="history" aria-selected="false">History</button>
+      <button class="tab" role="tab" data-tab="trends" aria-selected="false">Trends</button>
+      <button class="tab" role="tab" data-tab="report" aria-selected="false">Report</button>
+      <button class="tab" role="tab" data-tab="settings" aria-selected="false">Settings</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============ LOG ============ -->
+    <section class="panel is-active" id="panel-log" data-panel="log">
+      <div class="card">
+        <h2>New reading</h2>
+        <p class="muted">Take a photo of your monitor's screen and BP4me will read the numbers. You can always correct them before saving.</p>
+
+        <div class="capture-row">
+          <label class="btn btn-primary btn-lg" for="photoInput">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            Photograph monitor
+          </label>
+          <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
+          <label class="btn" for="photoPick">Choose image</label>
+          <input type="file" id="photoPick" accept="image/*" hidden>
+        </div>
+
+        <div class="preview" id="preview" hidden>
+          <img id="previewImg" alt="Photo of the blood pressure monitor">
+          <div class="preview-status" id="readStatus" role="status" aria-live="polite"></div>
+        </div>
+
+        <form id="readingForm" class="reading-form" autocomplete="off">
+          <div class="values">
+            <label class="value-field">
+              <span class="value-label">SYS <small>mmHg</small></span>
+              <input type="number" inputmode="numeric" id="sys" name="sys" min="40" max="300" required placeholder="120">
+            </label>
+            <label class="value-field">
+              <span class="value-label">DIA <small>mmHg</small></span>
+              <input type="number" inputmode="numeric" id="dia" name="dia" min="20" max="200" required placeholder="80">
+            </label>
+            <label class="value-field">
+              <span class="value-label">PUL <small>bpm</small></span>
+              <input type="number" inputmode="numeric" id="pul" name="pul" min="20" max="250" placeholder="70">
+            </label>
+          </div>
+
+          <div class="category-line" id="categoryLine" aria-live="polite"></div>
+
+          <div class="form-grid">
+            <label>
+              <span>Date &amp; time</span>
+              <input type="datetime-local" id="ts" name="ts" required>
+            </label>
+            <label>
+              <span>Arm</span>
+              <select id="arm" name="arm">
+                <option value="">—</option>
+                <option value="left">Left</option>
+                <option value="right">Right</option>
+              </select>
+            </label>
+            <label class="span-2">
+              <span>Note</span>
+              <input type="text" id="note" name="note" maxlength="200" placeholder="e.g. after coffee, before medication">
+            </label>
+          </div>
+
+          <input type="hidden" id="source" name="source" value="manual">
+          <input type="hidden" id="editId" value="">
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary" id="saveBtn">Save reading</button>
+            <button type="button" class="btn" id="clearBtn">Clear</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>Recent readings</h3>
+        <div id="recentList" class="recent-list"></div>
+      </div>
+    </section>
+
+    <!-- ============ HISTORY ============ -->
+    <section class="panel" id="panel-history" data-panel="history">
+      <div class="card">
+        <div class="card-head">
+          <h2>History</h2>
+          <div class="filters">
+            <select id="historyRange" aria-label="Period">
+              <option value="7">Last 7 days</option>
+              <option value="30" selected>Last 30 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="365">Last year</option>
+              <option value="all">All</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="readings-table" id="historyTable">
+            <thead>
+              <tr>
+                <th>Date</th><th>Time</th><th class="num">SYS</th><th class="num">DIA</th><th class="num">PUL</th><th>Category</th><th>Note</th><th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="muted" id="historyEmpty" hidden>No readings in this period.</p>
+      </div>
+    </section>
+
+    <!-- ============ TRENDS ============ -->
+    <section class="panel" id="panel-trends" data-panel="trends">
+      <div class="card">
+        <div class="card-head">
+          <h2>Trends</h2>
+          <div class="filters">
+            <select id="trendRange" aria-label="Period">
+              <option value="7">Last 7 days</option>
+              <option value="30" selected>Last 30 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="365">Last year</option>
+              <option value="all">All</option>
+            </select>
+          </div>
+        </div>
+        <div class="stats" id="statGrid"></div>
+      </div>
+
+      <div class="card">
+        <h3>Blood pressure</h3>
+        <p class="muted">Systolic and diastolic over time. Dotted lines mark 130 / 80 mmHg (stage 1 hypertension thresholds).</p>
+        <div class="chart-legend" id="bpLegend"></div>
+        <div class="chart-box"><canvas id="bpChart" role="img" aria-label="Systolic and diastolic blood pressure over time"></canvas></div>
+      </div>
+
+      <div class="card">
+        <h3>Pulse</h3>
+        <div class="chart-box chart-box--short"><canvas id="pulseChart" role="img" aria-label="Pulse over time"></canvas></div>
+      </div>
+
+      <div class="card">
+        <h3>Time of day</h3>
+        <p class="muted">Average reading by time of day for the selected period.</p>
+        <div class="table-wrap">
+          <table class="readings-table" id="todTable">
+            <thead><tr><th>Period</th><th class="num">Readings</th><th class="num">Avg SYS</th><th class="num">Avg DIA</th><th class="num">Avg PUL</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ REPORT ============ -->
+    <section class="panel" id="panel-report" data-panel="report">
+      <div class="card">
+        <h2>Report for your physician</h2>
+        <p class="muted">Choose a period, generate a PDF, then attach it to an email. Nothing leaves your device until you send it.</p>
+        <div class="form-grid">
+          <label><span>From</span><input type="date" id="reportFrom"></label>
+          <label><span>To</span><input type="date" id="reportTo"></label>
+          <label class="span-2"><span>Note to physician (optional)</span><input type="text" id="reportNote" maxlength="300" placeholder="e.g. started new medication on the 12th"></label>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="pdfBtn">Download PDF</button>
+          <button class="btn" id="printBtn">Print</button>
+          <button class="btn" id="emailBtn">Email physician…</button>
+        </div>
+        <p class="muted small">Email opens your mail app with a pre-filled message. Attach the downloaded PDF before sending.</p>
+      </div>
+
+      <div class="card report-preview" id="reportPreview">
+        <div id="reportBody"></div>
+      </div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section class="panel" id="panel-settings" data-panel="settings">
+      <div class="card">
+        <h2>Profile</h2>
+        <p class="muted">Shown on the PDF report. Stored only in this browser.</p>
+        <div class="form-grid">
+          <label><span>Name</span><input type="text" id="setName" maxlength="80"></label>
+          <label><span>Date of birth</span><input type="date" id="setDob"></label>
+          <label class="span-2"><span>Physician email</span><input type="email" id="setDoctorEmail" placeholder="dr@example.com"></label>
+          <label class="span-2"><span>Physician name</span><input type="text" id="setDoctorName" maxlength="80"></label>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="saveSettingsBtn">Save profile</button>
+          <span class="muted" id="settingsStatus" role="status"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Data</h2>
+        <p class="muted">All readings live in this browser's storage. Export regularly to keep a backup.</p>
+        <div class="form-actions">
+          <button class="btn" id="exportJsonBtn">Export JSON</button>
+          <button class="btn" id="exportCsvBtn">Export CSV</button>
+          <label class="btn" for="importInput">Import JSON</label>
+          <input type="file" id="importInput" accept="application/json,.json" hidden>
+          <button class="btn btn-danger" id="wipeBtn">Delete all readings</button>
+        </div>
+        <p class="muted small" id="dataStatus" role="status"></p>
+      </div>
+
+      <div class="card">
+        <h2>About</h2>
+        <p class="muted small">Vision service: <span id="visionStatus">checking…</span></p>
+        <p class="muted small">Categories follow the 2017 ACC/AHA guideline: Normal &lt;120/&lt;80; Elevated 120–129/&lt;80; Stage 1 130–139 or 80–89; Stage 2 ≥140 or ≥90; Crisis &gt;180 and/or &gt;120. BP4me is a logging aid, not a medical device. Always confirm the numbers against your monitor, and talk to a clinician about your readings.</p>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

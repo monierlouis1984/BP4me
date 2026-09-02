@@ -1,0 +1,24 @@
+{
+  // BP4me — blood pressure logger with visual AI reading of the monitor screen.
+  // Static front-end served from ./public; POST /api/read is handled by the Worker.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bp4me",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    // Vision model used to read the monitor display.
+    "BP4ME_MODEL": "claude-opus-5"
+  }
+  // Secret (set with `npx wrangler secret put ANTHROPIC_API_KEY`, or in .dev.vars locally):
+  //   ANTHROPIC_API_KEY
+}

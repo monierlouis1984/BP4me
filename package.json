@@ -1,0 +1,33 @@
+{
+  "name": "bp4me",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/monierlouis1984/BP4ME.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/monierlouis1984/BP4ME/issues"
+  },
+  "homepage": "https://github.com/monierlouis1984/BP4ME#readme",
+  "private": "true",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260902.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.128.0"
+  }
+}
